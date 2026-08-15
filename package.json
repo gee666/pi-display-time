@@ -1,0 +1,34 @@
+{
+  "name": "pi-display-time",
+  "version": "0.1.0",
+  "description": "A persistent start and finish timeline for pi tool calls.",
+  "type": "module",
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "timestamp",
+    "tui"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/gee666/pi-display-time.git"
+  },
+  "files": [
+    "extensions",
+    "README.md",
+    "LICENSE"
+  ],
+  "pi": {
+    "extensions": [
+      "./extensions/display-time.ts"
+    ]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
