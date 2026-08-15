@@ -3,20 +3,20 @@
 A small [pi](https://github.com/earendil-works/pi-mono) extension that adds a persistent tool-execution timeline to the interactive transcript.
 
 ```text
-3 parallel tools started — 2026-03-17 14:08:36
-bash tool finished — 2026-03-17 14:10:49
-read tool finished — 2026-03-17 14:11:02
-subagents tool finished — 2026-03-17 21:39:42
+2026-08-05 23:15:01 - 3 parallel tools started
+2026-08-05 23:18:02 - tools finished
 ```
 
-For a batch containing one tool, the start entry names it:
+A parallel batch gets one start entry and one finish entry. The finish entry appears when the final tool in that batch completes.
+
+For a batch containing one tool, the entries name it:
 
 ```text
-bash tool started — 2026-03-17 14:08:36
-bash tool finished — 2026-03-17 14:10:49
+2026-08-05 23:15:01 - bash tool started
+2026-08-05 23:18:02 - bash tool finished
 ```
 
-Timeline entries use normal, dimmed, left-aligned text with no background. Parallel calls from the same assistant response share one start entry, while every tool gets its own finish entry.
+Timeline entries use normal, dimmed, left-aligned text with no background.
 
 ## Install
 

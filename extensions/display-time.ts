@@ -36,7 +36,7 @@ export default function displayTime(pi: ExtensionAPI) {
     if (!data) return undefined;
 
     return new Text(
-      theme.fg("dim", `${data.text} — ${formatDateTime(data.timestamp)}`),
+      theme.fg("dim", `${formatDateTime(data.timestamp)} - ${data.text}`),
       1,
       0,
     );
@@ -87,15 +87,19 @@ export default function displayTime(pi: ExtensionAPI) {
   });
 
   pi.on("tool_execution_end", (event) => {
-    appendTimelineEntry(`${event.toolName} tool finished`);
-
     const batch = batchesByToolCall.get(event.toolCallId);
-    if (!batch) return;
+    if (!batch) {
+      appendTimelineEntry(`${event.toolName} tool finished`);
+      return;
+    }
 
     batch.ids.delete(event.toolCallId);
     batchesByToolCall.delete(event.toolCallId);
 
+    // A parallel batch gets one finish marker, emitted when its final tool ends.
     if (batch.ids.size === 0) {
+      appendTimelineEntry(batch.toolNames.length > 1 ? "tools finished" : `${event.toolName} tool finished`);
+
       for (const [toolCallId, candidate] of batchesByToolCall) {
         if (candidate === batch) batchesByToolCall.delete(toolCallId);
       }
