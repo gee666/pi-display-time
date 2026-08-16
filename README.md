@@ -16,6 +16,23 @@ For a batch containing one tool, the entries name it:
 2026-08-05 23:18:02 - bash tool finished
 ```
 
+Turn boundaries are marked too — one entry when a user prompt is sent, and one when the agent settles and waits for the next message:
+
+```text
+2026-08-05 23:14:58 - prompt sent
+2026-08-05 23:18:04 - turn finished, took 3m 6s, started at 2026-08-05 23:14:58
+```
+
+Durations are rendered with the coarsest sensible units:
+
+| Elapsed | Rendered |
+| --- | --- |
+| less than a minute | `42s` |
+| less than an hour | `5m 36s` |
+| less than a day | `1h 35m` |
+| less than a week | `1d 20h 35m` |
+| a week or more | `2w 3d 5h` |
+
 Timeline entries use normal, dimmed, left-aligned text with no background.
 
 ## Install

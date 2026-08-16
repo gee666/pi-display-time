@@ -24,8 +24,34 @@ function formatDateTime(timestamp: number): string {
   ].join(" ");
 }
 
+// Renders an elapsed duration with the coarsest sensible set of units:
+//   < 1m   -> 42s
+//   < 1h   -> 5m 36s
+//   < 1d   -> 1h 35m
+//   < 1w   -> 1d 20h 35m
+//   >= 1w  -> 2w 3d 5h
+function formatDuration(ms: number): string {
+  const totalSeconds = Math.max(0, Math.round(ms / 1000));
+
+  const seconds = totalSeconds % 60;
+  const totalMinutes = Math.floor(totalSeconds / 60);
+  const minutes = totalMinutes % 60;
+  const totalHours = Math.floor(totalMinutes / 60);
+  const hours = totalHours % 24;
+  const totalDays = Math.floor(totalHours / 24);
+  const days = totalDays % 7;
+  const weeks = Math.floor(totalDays / 7);
+
+  if (weeks > 0) return `${weeks}w ${days}d ${hours}h`;
+  if (totalDays > 0) return `${totalDays}d ${hours}h ${minutes}m`;
+  if (totalHours > 0) return `${totalHours}h ${minutes}m`;
+  if (totalMinutes > 0) return `${totalMinutes}m ${seconds}s`;
+  return `${totalSeconds}s`;
+}
+
 export default function displayTime(pi: ExtensionAPI) {
   const batchesByToolCall = new Map<string, ToolBatch>();
+  let turnStartedAt: number | undefined;
 
   const appendTimelineEntry = (text: string, timestamp = Date.now()) => {
     pi.appendEntry<TimelineEntry>(ENTRY_TYPE, { text, timestamp });
@@ -39,6 +65,29 @@ export default function displayTime(pi: ExtensionAPI) {
       theme.fg("dim", `${formatDateTime(data.timestamp)} - ${data.text}`),
       1,
       0,
+    );
+  });
+
+  // A user prompt opens a turn: mark it and remember when the clock started.
+  pi.on("message_start", (event) => {
+    if (event.message.role !== "user") return;
+
+    const timestamp = Date.now();
+    turnStartedAt ??= timestamp;
+    appendTimelineEntry("prompt sent", timestamp);
+  });
+
+  // agent_settled fires once the agent is done and waits for the next user
+  // message (no retry, compaction, or queued continuation pending).
+  pi.on("agent_settled", () => {
+    const startedAt = turnStartedAt;
+    turnStartedAt = undefined;
+    if (startedAt === undefined) return;
+
+    const finishedAt = Date.now();
+    appendTimelineEntry(
+      `turn finished, took ${formatDuration(finishedAt - startedAt)}, started at ${formatDateTime(startedAt)}`,
+      finishedAt,
     );
   });
 
@@ -108,5 +157,6 @@ export default function displayTime(pi: ExtensionAPI) {
 
   pi.on("session_shutdown", () => {
     batchesByToolCall.clear();
+    turnStartedAt = undefined;
   });
 }
