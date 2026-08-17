@@ -53,8 +53,35 @@ export default function displayTime(pi: ExtensionAPI) {
   const batchesByToolCall = new Map<string, ToolBatch>();
   let turnStartedAt: number | undefined;
 
+  // Custom entries are stored as nodes in the session tree, parented to the
+  // current leaf. Pi persists a message entry only *after* extensions handle
+  // its event, so appending from an event that precedes persistence (user
+  // `message_start`, `tool_execution_end`) would make our entry the parent of
+  // that message. Such an entry then survives `/tree` navigation and `/fork`
+  // even when the message it belongs to is left behind, showing timestamps that
+  // do not belong to the current branch.
+  //
+  // So entries whose message is not persisted yet are queued and flushed at the
+  // next point where the tree is settled. Timestamps are captured when the
+  // event fires, not when the entry is flushed.
+  const pendingEntries: TimelineEntry[] = [];
+
+  const flushPendingEntries = () => {
+    if (pendingEntries.length === 0) return;
+
+    const entries = pendingEntries.splice(0, pendingEntries.length);
+    for (const entry of entries) pi.appendEntry<TimelineEntry>(ENTRY_TYPE, entry);
+  };
+
+  // Safe to write straight away: everything before this event is persisted.
   const appendTimelineEntry = (text: string, timestamp = Date.now()) => {
+    flushPendingEntries();
     pi.appendEntry<TimelineEntry>(ENTRY_TYPE, { text, timestamp });
+  };
+
+  // Deferred: the message this entry describes is not persisted yet.
+  const queueTimelineEntry = (text: string, timestamp = Date.now()) => {
+    pendingEntries.push({ text, timestamp });
   };
 
   pi.registerEntryRenderer<TimelineEntry>(ENTRY_TYPE, (entry, _options, theme) => {
@@ -69,17 +96,30 @@ export default function displayTime(pi: ExtensionAPI) {
   });
 
   // A user prompt opens a turn: mark it and remember when the clock started.
+  // The prompt entry is queued and written once the user message itself is in
+  // the session (by then the assistant response is starting), so the marker
+  // ends up as a child of the prompt instead of its parent.
   pi.on("message_start", (event) => {
-    if (event.message.role !== "user") return;
+    if (event.message.role === "user") {
+      const timestamp = Date.now();
+      turnStartedAt ??= timestamp;
+      queueTimelineEntry("prompt sent", timestamp);
+      return;
+    }
 
-    const timestamp = Date.now();
-    turnStartedAt ??= timestamp;
-    appendTimelineEntry("prompt sent", timestamp);
+    if (event.message.role === "assistant") flushPendingEntries();
+  });
+
+  // Tool results of this turn are persisted by now, so queued tool-finish
+  // markers can be written at their correct place in the tree.
+  pi.on("turn_end", () => {
+    flushPendingEntries();
   });
 
   // agent_settled fires once the agent is done and waits for the next user
   // message (no retry, compaction, or queued continuation pending).
   pi.on("agent_settled", () => {
+    flushPendingEntries();
     const startedAt = turnStartedAt;
     turnStartedAt = undefined;
     if (startedAt === undefined) return;
@@ -138,7 +178,7 @@ export default function displayTime(pi: ExtensionAPI) {
   pi.on("tool_execution_end", (event) => {
     const batch = batchesByToolCall.get(event.toolCallId);
     if (!batch) {
-      appendTimelineEntry(`${event.toolName} tool finished`);
+      queueTimelineEntry(`${event.toolName} tool finished`);
       return;
     }
 
@@ -147,7 +187,7 @@ export default function displayTime(pi: ExtensionAPI) {
 
     // A parallel batch gets one finish marker, emitted when its final tool ends.
     if (batch.ids.size === 0) {
-      appendTimelineEntry(batch.toolNames.length > 1 ? "tools finished" : `${event.toolName} tool finished`);
+      queueTimelineEntry(batch.toolNames.length > 1 ? "tools finished" : `${event.toolName} tool finished`);
 
       for (const [toolCallId, candidate] of batchesByToolCall) {
         if (candidate === batch) batchesByToolCall.delete(toolCallId);
@@ -157,6 +197,7 @@ export default function displayTime(pi: ExtensionAPI) {
 
   pi.on("session_shutdown", () => {
     batchesByToolCall.clear();
+    pendingEntries.length = 0;
     turnStartedAt = undefined;
   });
 }

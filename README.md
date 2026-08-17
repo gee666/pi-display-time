@@ -67,6 +67,8 @@ pi -e ./extensions/display-time.ts
 
 The extension uses pi's public `appendEntry()` and `registerEntryRenderer()` APIs. Every timeline row is stored as a custom session entry, so it remains visible after reload, resume, fork, and restart. Entries are TUI-only and are not included in model context.
 
+Custom entries are nodes in the session tree, parented to the current leaf, and pi persists a message entry only after extensions have handled its event. Writing a marker from an event that runs before that persistence (a user `message_start`, a `tool_execution_end`) would make the marker the *parent* of the message it describes, so it would still show up after `/tree` navigation or `/fork` even when its message was left behind. The extension therefore queues those markers (keeping the original timestamp) and writes them at the next settled point in the tree — the start of the assistant response, `turn_end`, or `agent_settled`. A fork or branch switch then shows only the timestamps that belong to that branch.
+
 The extension does not override or modify tool renderers, so built-in and custom tool displays remain unchanged.
 
 ## License
