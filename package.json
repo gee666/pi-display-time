@@ -1,7 +1,7 @@
 {
   "name": "pi-display-time",
-  "version": "0.1.2",
-  "description": "A persistent start and finish timeline for pi tool calls.",
+  "version": "0.2.0",
+  "description": "Live start times for running and nested tools, with a compact persistent timing timeline.",
   "type": "module",
   "keywords": [
     "pi-package",
@@ -24,11 +24,19 @@
       "./extensions/display-time.ts"
     ]
   },
+  "scripts": {
+    "test": "node --experimental-strip-types --test tests/*.test.ts",
+    "check": "tsc --noEmit"
+  },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "*",
     "@earendil-works/pi-tui": "*"
   },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "typescript": "^5.9.3"
+  },
   "engines": {
-    "node": ">=20"
+    "node": ">=22.19.0"
   }
 }

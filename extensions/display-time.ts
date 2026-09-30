@@ -1,203 +1,218 @@
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { Text } from "@earendil-works/pi-tui";
+import type { ExtensionAPI, ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
+import { Text, truncateToWidth } from "@earendil-works/pi-tui";
+import { cleanText, formatDuration, summarizeNames, TimingTracker, type TimingEntry } from "./timing.ts";
 
 const ENTRY_TYPE = "display-time";
-
-interface TimelineEntry {
-  text: string;
-  timestamp: number;
-}
-
-interface ToolBatch {
-  ids: Set<string>;
-  toolNames: string[];
-  started: boolean;
-}
-
-function formatDateTime(timestamp: number): string {
-  const date = new Date(timestamp);
-  const pad = (value: number) => String(value).padStart(2, "0");
-
-  return [
-    `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`,
-    `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`,
-  ].join(" ");
-}
-
-// Renders an elapsed duration with the coarsest sensible set of units:
-//   < 1m   -> 42s
-//   < 1h   -> 5m 36s
-//   < 1d   -> 1h 35m
-//   < 1w   -> 1d 20h 35m
-//   >= 1w  -> 2w 3d 5h
-function formatDuration(ms: number): string {
-  const totalSeconds = Math.max(0, Math.round(ms / 1000));
-
-  const seconds = totalSeconds % 60;
-  const totalMinutes = Math.floor(totalSeconds / 60);
-  const minutes = totalMinutes % 60;
-  const totalHours = Math.floor(totalMinutes / 60);
-  const hours = totalHours % 24;
-  const totalDays = Math.floor(totalHours / 24);
-  const days = totalDays % 7;
-  const weeks = Math.floor(totalDays / 7);
-
-  if (weeks > 0) return `${weeks}w ${days}d ${hours}h`;
-  if (totalDays > 0) return `${totalDays}d ${hours}h ${minutes}m`;
-  if (totalHours > 0) return `${totalHours}h ${minutes}m`;
-  if (totalMinutes > 0) return `${totalMinutes}m ${seconds}s`;
-  return `${totalSeconds}s`;
-}
+const SETTINGS_TYPE = "display-time-settings";
+type Mode = "compact" | "summary" | "off";
+interface LegacyEntry { text: string; timestamp: number }
 
 export default function displayTime(pi: ExtensionAPI) {
-  const batchesByToolCall = new Map<string, ToolBatch>();
-  let turnStartedAt: number | undefined;
+  pi.registerFlag("display-time-zone", { description: "Timestamp timezone, e.g. Europe/Berlin", type: "string" });
+  pi.registerFlag("display-time-locale", { description: "Timestamp locale, e.g. en-GB", type: "string" });
+  pi.registerFlag("display-time-12h", { description: "Use a 12-hour clock", type: "boolean", default: false });
+  pi.registerFlag("display-time-no-live", { description: "Disable live running-tool lines, keeping completion history", type: "boolean", default: false });
 
-  // Custom entries are stored as nodes in the session tree, parented to the
-  // current leaf. Pi persists a message entry only *after* extensions handle
-  // its event, so appending from an event that precedes persistence (user
-  // `message_start`, `tool_execution_end`) would make our entry the parent of
-  // that message. Such an entry then survives `/tree` navigation and `/fork`
-  // even when the message it belongs to is left behind, showing timestamps that
-  // do not belong to the current branch.
-  //
-  // So entries whose message is not persisted yet are queued and flushed at the
-  // next point where the tree is settled. Timestamps are captured when the
-  // event fires, not when the entry is flushed.
-  const pendingEntries: TimelineEntry[] = [];
+  const tracker = new TimingTracker();
+  let mode: Mode = "compact";
+  let outcome: TimingEntry["outcome"] = "completed";
+  let timer: ReturnType<typeof setInterval> | undefined;
+  let uiContext: ExtensionContext | undefined;
+  let timeFormat: Intl.DateTimeFormat;
+  let dateFormat: Intl.DateTimeFormat;
+  let fullFormat: Intl.DateTimeFormat;
 
-  const flushPendingEntries = () => {
-    if (pendingEntries.length === 0) return;
+  function configureFormats(ctx?: ExtensionContext) {
+    const locale = pi.getFlag("display-time-locale") as string | undefined;
+    const timeZone = pi.getFlag("display-time-zone") as string | undefined;
+    const hour12 = pi.getFlag("display-time-12h") === true;
+    function create(locale?: string, timeZone?: string) {
+      timeFormat = new Intl.DateTimeFormat(locale, { timeZone, hour12, hour: "2-digit", minute: "2-digit", second: "2-digit" });
+      dateFormat = new Intl.DateTimeFormat(locale, { timeZone, year: "numeric", month: "short", day: "numeric" });
+      fullFormat = new Intl.DateTimeFormat(locale, { timeZone, hour12, dateStyle: "medium", timeStyle: "long" });
+    }
+    try { create(locale, timeZone); }
+    catch {
+      create();
+      if (ctx?.hasUI) ctx.ui.notify("display-time: invalid locale or timezone; using system defaults.", "warning");
+    }
+  }
 
-    const entries = pendingEntries.splice(0, pendingEntries.length);
-    for (const entry of entries) pi.appendEntry<TimelineEntry>(ENTRY_TYPE, entry);
-  };
+  function stopLive() {
+    if (timer) clearInterval(timer);
+    timer = undefined;
+    uiContext?.ui.setStatus(ENTRY_TYPE, undefined);
+    uiContext?.ui.setWidget(ENTRY_TYPE, undefined);
+    uiContext = undefined;
+  }
 
-  // Safe to write straight away: everything before this event is persisted.
-  const appendTimelineEntry = (text: string, timestamp = Date.now()) => {
-    flushPendingEntries();
-    pi.appendEntry<TimelineEntry>(ENTRY_TYPE, { text, timestamp });
-  };
-
-  // Deferred: the message this entry describes is not persisted yet.
-  const queueTimelineEntry = (text: string, timestamp = Date.now()) => {
-    pendingEntries.push({ text, timestamp });
-  };
-
-  pi.registerEntryRenderer<TimelineEntry>(ENTRY_TYPE, (entry, _options, theme) => {
-    const data = entry.data;
-    if (!data) return undefined;
-
-    return new Text(
-      theme.fg("dim", `${formatDateTime(data.timestamp)} - ${data.text}`),
-      1,
-      0,
-    );
-  });
-
-  // A user prompt opens a turn: mark it and remember when the clock started.
-  // The prompt entry is queued and written once the user message itself is in
-  // the session (by then the assistant response is starting), so the marker
-  // ends up as a child of the prompt instead of its parent.
-  pi.on("message_start", (event) => {
-    if (event.message.role === "user") {
-      const timestamp = Date.now();
-      turnStartedAt ??= timestamp;
-      queueTimelineEntry("prompt sent", timestamp);
+  function updateLive() {
+    if (!uiContext) return;
+    const calls = tracker.activeCalls();
+    if (!calls.length) {
+      uiContext.ui.setWidget(ENTRY_TYPE, undefined);
       return;
     }
+    if (!timeFormat) configureFormats();
+    uiContext.ui.setWidget(ENTRY_TYPE, (_tui, theme) => ({
+      render: (width: number) => calls.map(call => {
+        let start = call.startedAt === undefined ? "unknown" : timeFormat.format(call.startedAt);
+        // Include the date only for tools that started on a different local day.
+        if (call.startedAt !== undefined && dateFormat.format(call.startedAt) !== dateFormat.format(Date.now())) {
+          start = `${dateFormat.format(call.startedAt)} ${start}`;
+        }
+        const elapsed = call.elapsedMs === undefined ? "?" : formatDuration(call.elapsedMs);
+        const label = `${"  ".repeat(call.depth)}${cleanText(call.name)}`;
+        return truncateToWidth(`${theme.fg("dim", start)} · ${theme.fg("accent", elapsed)}  ${theme.fg("muted", label)}`, width);
+      }),
+      invalidate() {},
+    }), { placement: "aboveEditor" });
+  }
 
-    if (event.message.role === "assistant") flushPendingEntries();
-  });
-
-  // Tool results of this turn are persisted by now, so queued tool-finish
-  // markers can be written at their correct place in the tree.
-  pi.on("turn_end", () => {
-    flushPendingEntries();
-  });
-
-  // agent_settled fires once the agent is done and waits for the next user
-  // message (no retry, compaction, or queued continuation pending).
-  pi.on("agent_settled", () => {
-    flushPendingEntries();
-    const startedAt = turnStartedAt;
-    turnStartedAt = undefined;
-    if (startedAt === undefined) return;
-
-    const finishedAt = Date.now();
-    appendTimelineEntry(
-      `turn finished, took ${formatDuration(finishedAt - startedAt)}, started at ${formatDateTime(startedAt)}`,
-      finishedAt,
-    );
-  });
-
-  // One assistant response may request several tools. Pi executes such a batch
-  // in parallel by default, so all calls share one start marker.
-  pi.on("message_end", (event) => {
-    if (event.message.role !== "assistant") return;
-
-    const calls = event.message.content.filter(
-      (part): part is Extract<(typeof event.message.content)[number], { type: "toolCall" }> =>
-        part.type === "toolCall",
-    );
-    if (calls.length === 0) return;
-
-    const batch: ToolBatch = {
-      ids: new Set(calls.map((call) => call.id)),
-      toolNames: calls.map((call) => call.name),
-      started: false,
-    };
-
-    for (const call of calls) batchesByToolCall.set(call.id, batch);
-  });
-
-  pi.on("tool_execution_start", (event) => {
-    let batch = batchesByToolCall.get(event.toolCallId);
-
-    // Defensive fallback for tools started without a preceding assistant
-    // message event (for example, a future execution path added by pi).
-    if (!batch) {
-      batch = {
-        ids: new Set([event.toolCallId]),
-        toolNames: [event.toolName],
-        started: false,
-      };
-      batchesByToolCall.set(event.toolCallId, batch);
+  function startLive(ctx: ExtensionContext) {
+    if (mode === "off" || ctx.mode !== "tui" || pi.getFlag("display-time-no-live") === true) return;
+    uiContext = ctx;
+    updateLive();
+    if (!timer) {
+      timer = setInterval(updateLive, 1000);
+      timer.unref();
     }
+  }
 
-    if (batch.started) return;
-    batch.started = true;
-
-    if (batch.ids.size > 1) {
-      appendTimelineEntry(`${batch.ids.size} parallel tools started`);
+  function render(data: TimingEntry, expanded: boolean, theme: Theme): string {
+    const stamp = theme.fg("dim", `${dateFormat.format(data.finishedAt)} · `)
+      + theme.fg("muted", timeFormat.format(data.finishedAt));
+    const duration = theme.fg("accent", formatDuration(data.elapsedMs));
+    const problems = [
+      data.failedCalls ? `${data.failedCalls} failed` : "",
+      data.interruptedCalls ? `${data.interruptedCalls} interrupted` : "",
+    ].filter(Boolean).join(", ");
+    let label: string;
+    if (data.kind === "run") {
+      label = data.outcome === "aborted" ? "Run aborted" : data.outcome === "error" ? "Run failed" : "Run finished";
+      if (data.totalCalls) label += ` · ${data.totalCalls} tool call${data.totalCalls === 1 ? "" : "s"}`;
     } else {
-      appendTimelineEntry(`${event.toolName} tool started`);
+      const roots = data.calls.filter(call => !call.parentId);
+      const children = data.calls.filter(call => call.parentId);
+      label = summarizeNames(roots) || "Tools";
+      if (children.length) label += ` · ${children.length} nested: ${summarizeNames(children)}`;
+      if (roots.length > 1) label = `${roots.length} tools · ${label}`;
     }
+    const color = data.outcome === "error" || data.failedCalls ? "error"
+      : data.outcome === "aborted" || data.interruptedCalls ? "warning" : "muted";
+    let text = `${stamp}  ${theme.fg(color, label)} · ${duration}`;
+    if (problems) text += ` · ${theme.fg(color, problems)}`;
+    if (expanded) {
+      text += `\n  ${theme.fg("dim", `${fullFormat.format(data.startedAt)} → ${fullFormat.format(data.finishedAt)}`)}`;
+      const byId = new Map(data.calls.map(call => [call.id, call]));
+      for (const call of data.calls.slice(0, 40)) {
+        let depth = 0;
+        let parent = call.parentId;
+        const visited = new Set([call.id]);
+        while (parent && !visited.has(parent) && depth < 4) {
+          visited.add(parent);
+          depth++;
+          parent = byId.get(parent)?.parentId;
+        }
+        const time = call.startedAt === undefined ? "unknown start" : timeFormat.format(call.startedAt);
+        const elapsed = call.elapsedMs === undefined ? "duration unknown" : formatDuration(call.elapsedMs);
+        const state = call.status === "completed" ? "" : ` · ${call.status}`;
+        text += `\n  ${"  ".repeat(depth)}${theme.fg("dim", time)}  ${theme.fg(call.status === "error" ? "error" : "muted", cleanText(call.name))} · ${elapsed}${state}`;
+      }
+      if (data.calls.length > 40) text += `\n  ${theme.fg("dim", `… ${data.calls.length - 40} more calls`)}`;
+    }
+    return text;
+  }
+
+  pi.registerEntryRenderer<TimingEntry | LegacyEntry>(ENTRY_TYPE, (entry, { expanded }, theme) => {
+    if (!entry.data || mode === "off") return undefined;
+    if (!timeFormat) configureFormats();
+    const data = entry.data;
+    // Old session files remain readable; never rewrite historical entries.
+    if (!("version" in data)) {
+      return new Text(theme.fg("dim", `${dateFormat.format(data.timestamp)} · ${timeFormat.format(data.timestamp)}  ${cleanText(data.text)}`), 1, 0);
+    }
+    if (mode === "summary" && data.kind === "tools") return undefined;
+    return new Text(render(data, expanded, theme), 1, 0);
   });
 
-  pi.on("tool_execution_end", (event) => {
-    const batch = batchesByToolCall.get(event.toolCallId);
-    if (!batch) {
-      queueTimelineEntry(`${event.toolName} tool finished`);
-      return;
-    }
-
-    batch.ids.delete(event.toolCallId);
-    batchesByToolCall.delete(event.toolCallId);
-
-    // A parallel batch gets one finish marker, emitted when its final tool ends.
-    if (batch.ids.size === 0) {
-      queueTimelineEntry(batch.toolNames.length > 1 ? "tools finished" : `${event.toolName} tool finished`);
-
-      for (const [toolCallId, candidate] of batchesByToolCall) {
-        if (candidate === batch) batchesByToolCall.delete(toolCallId);
+  function reset(ctx: ExtensionContext) {
+    stopLive();
+    tracker.reset();
+    outcome = "completed";
+    mode = "compact";
+    for (const entry of ctx.sessionManager.getBranch()) {
+      if (entry.type === "custom" && entry.customType === SETTINGS_TYPE) {
+        const value = (entry.data as { mode?: unknown } | undefined)?.mode;
+        if (value === "compact" || value === "summary" || value === "off") mode = value;
       }
     }
+    configureFormats(ctx);
+  }
+
+  pi.on("session_start", (_event, ctx) => reset(ctx));
+  pi.on("session_tree", (_event, ctx) => reset(ctx));
+  pi.on("session_shutdown", () => { stopLive(); tracker.reset(); });
+
+  pi.registerCommand("display-time", {
+    description: "Timing display: compact, summary, or off. Saved on the current session branch.",
+    handler: async (args, ctx) => {
+      const value = args.trim() || (ctx.hasUI ? await ctx.ui.select("Timing display", ["compact", "summary", "off"]) : undefined);
+      if (value === undefined) return;
+      if (value !== "compact" && value !== "summary" && value !== "off") {
+        if (ctx.hasUI) ctx.ui.notify("Usage: /display-time compact|summary|off", "warning");
+        return;
+      }
+      mode = value;
+      pi.appendEntry(SETTINGS_TYPE, { mode });
+      if (mode === "off") stopLive();
+      else if (tracker.live()) startLive(ctx);
+      if (ctx.hasUI) ctx.ui.notify(`Timing display: ${mode}. Existing rows update when the transcript is rebuilt.`, "info");
+    },
   });
 
-  pi.on("session_shutdown", () => {
-    batchesByToolCall.clear();
-    pendingEntries.length = 0;
-    turnStartedAt = undefined;
+  pi.on("message_start", (event, ctx) => {
+    if (event.message.role !== "user") return;
+    tracker.beginRun();
+    startLive(ctx);
+  });
+  pi.on("agent_start", (_event, ctx) => {
+    tracker.beginRun();
+    startLive(ctx);
+  });
+  pi.on("tool_execution_start", (event, ctx) => {
+    tracker.start(event.toolCallId, event.toolName, event.parentToolCallId);
+    startLive(ctx);
+  });
+  pi.on("tool_execution_end", event => {
+    tracker.end(event.toolCallId, event.toolName, event.isError, event.parentToolCallId);
+    updateLive();
+  });
+
+  // The boundary's tool messages are already persisted. Returning custom drafts
+  // attaches summaries after those results, never before their owning messages.
+  pi.on("turn_end", event => {
+    outcome = event.outcome;
+    const data = tracker.flush();
+    if (!data) return;
+    return { entries: [...event.entries, { type: "custom" as const, customType: ENTRY_TYPE, data }] };
+  });
+  // Explicit aborts can skip agent_before_settle. The final assistant and
+  // turn_end events still carry the outcome; successful retries replace it.
+  pi.on("message_end", event => {
+    if (event.message.role !== "assistant") return;
+    outcome = event.message.stopReason === "aborted" ? "aborted"
+      : event.message.stopReason === "error" ? "error" : "completed";
+  });
+  pi.on("agent_before_settle", event => { outcome = event.outcome; });
+  pi.on("agent_settled", () => {
+    // Only final settlement ends the timer, not an intermediate agent_end that
+    // may be followed by retries, compaction, or another extension's continuation.
+    const pending = tracker.flush();
+    if (pending) pi.appendEntry(ENTRY_TYPE, pending);
+    const data = tracker.finish(outcome);
+    if (data) pi.appendEntry(ENTRY_TYPE, data);
+    outcome = "completed";
+    stopLive();
   });
 }

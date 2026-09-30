@@ -1,75 +1,108 @@
 # pi-display-time
 
-A small [pi](https://github.com/earendil-works/pi-mono) extension that adds a persistent tool-execution timeline to the interactive transcript.
+Live start times for running tools, plus a compact, persistent timing history for [Pi](https://github.com/earendil-works/pi).
+
+Requires Pi 0.99.1 or newer and Node.js 22.19 or newer. Uses only public APIs. Never replaces tools or their renderers.
+
+## While tools run
+
+A borderless widget above the editor shows one line per currently running tool:
 
 ```text
-2026-08-05 23:15:01 - 3 parallel tools started
-2026-08-05 23:18:02 - tools finished
+18:54:54 · 13.7 s  codemode
+18:54:55 · 12.7 s    bash
+18:55:02 · 5.7 s     read
 ```
 
-A parallel batch gets one start entry and one finish entry. The finish entry appears when the final tool in that batch completes.
+Each line shows the **start time, elapsed time, and tool name**. No repeated commands, arguments, output, heading, or box. Nested calls are indented, including calls inside codemode.
 
-For a batch containing one tool, the entries name it:
+- Lines appear immediately when execution starts.
+- Elapsed times update every second even if a tool stops producing output.
+- Each completed call disappears immediately; any still-running call stays visible.
+- The widget disappears when no tools are running.
+- Lines truncate to the terminal width rather than wrapping.
+- A tool that started on an earlier date also shows its start date.
+
+This live-updating text is the panel; there is no separate window. It reports execution duration, not inactivity or a diagnosis that a tool is stuck. Large concurrent batches produce one line per active call.
+
+## Completion history
+
+Completed work gets one compact transcript row per assistant tool batch, not a start and finish row for every nested call:
 
 ```text
-2026-08-05 23:15:01 - bash tool started
-2026-08-05 23:18:02 - bash tool finished
+Sep 29, 2026 · 18:55:08  codemode · 4 nested: bash, read ×3 · 14 s
+Sep 29, 2026 · 18:55:12  Run finished · 5 tool calls · 18 s
 ```
 
-Turn boundaries are marked too — one entry when a user prompt is sent, and one when the agent settles and waits for the next message:
+The batch row is written at the end-of-turn boundary, after Pi persists the tool results. Calls within a still-running codemode invocation remain in the live display until they finish; their history is grouped with that invocation.
+
+Expand the transcript entry with Pi's tool-output expansion control to see start/end timestamps with timezone and individual call durations. Expanded entries show up to 40 calls, followed by an omitted-call count. The stored entry retains all call timings.
+
+Failures and interrupted calls are marked separately. The run summary appears only when Pi fully settles, including retries, compaction, and queued continuations. Counts include both parent and nested calls. Batch time is wall elapsed execution time, not the sum of overlapping calls.
+
+## Display options
 
 ```text
-2026-08-05 23:14:58 - prompt sent
-2026-08-05 23:18:04 - turn finished, took 3m 6s, started at 2026-08-05 23:14:58
+/display-time compact
+/display-time summary
+/display-time off
 ```
 
-Durations are rendered with the coarsest sensible units:
+- `compact`: live running lines, batch summaries, and run summaries. Default.
+- `summary`: live running lines and run summaries, without batch history rows.
+- `off`: hide timing UI. Timing data is still recorded.
 
-| Elapsed | Rendered |
-| --- | --- |
-| less than a minute | `42s` |
-| less than an hour | `5m 36s` |
-| less than a day | `1h 35m` |
-| less than a week | `1d 20h 35m` |
-| a week or more | `2w 3d 5h` |
+Run `/display-time` without arguments to select a mode. The choice is saved on the current session branch. Already-rendered history rows update when Pi rebuilds the transcript, for example after reload or resume.
 
-Timeline entries use normal, dimmed, left-aligned text with no background.
+Optional startup flags:
+
+```bash
+pi --display-time-zone Europe/Berlin --display-time-locale en-GB
+pi --display-time-12h
+pi --display-time-no-live
+```
+
+The default is the system locale and timezone with a 24-hour clock. Invalid locale/timezone settings fall back to system defaults with a warning. Date formatting uses native `Intl`, with no additional runtime dependency.
 
 ## Install
-
-Install directly from the GitHub repository:
 
 ```bash
 pi install https://github.com/gee666/pi-display-time.git
 ```
 
-Pi records the package in your user settings and loads the extension in future sessions. Restart pi after installation if it is already running.
-
-To try the GitHub package for one run without installing it permanently:
+For one local run:
 
 ```bash
-pi -e https://github.com/gee666/pi-display-time.git
+pi -ne -e .
 ```
 
-The equivalent git shorthand is:
-
-```bash
-pi install git:github.com/gee666/pi-display-time
-```
-
-For local development:
+Or load only the extension file:
 
 ```bash
 pi -e ./extensions/display-time.ts
 ```
 
-## Persistence
+Run `/reload` after updating the extension, or restart Pi.
 
-The extension uses pi's public `appendEntry()` and `registerEntryRenderer()` APIs. Every timeline row is stored as a custom session entry, so it remains visible after reload, resume, fork, and restart. Entries are TUI-only and are not included in model context.
+## Persistence and compatibility
 
-Custom entries are nodes in the session tree, parented to the current leaf, and pi persists a message entry only after extensions have handled its event. Writing a marker from an event that runs before that persistence (a user `message_start`, a `tool_execution_end`) would make the marker the *parent* of the message it describes, so it would still show up after `/tree` navigation or `/fork` even when its message was left behind. The extension therefore queues those markers (keeping the original timestamp) and writes them at the next settled point in the tree — the start of the assistant response, `turn_end`, or `agent_settled`. A fork or branch switch then shows only the timestamps that belong to that branch.
+History uses public `appendEntry()`, actionable `turn_end` drafts, and `registerEntryRenderer()`. Entries are display-only and never enter model context. Timing summaries follow their tool-result messages in the session tree, preserving branch/fork behavior. Timers and live state are cleared on session replacement, shutdown, and tree navigation.
 
-The extension does not override or modify tool renderers, so built-in and custom tool displays remain unchanged.
+Elapsed durations use a monotonic clock, so system clock adjustments do not distort them. Dates use wall-clock timestamps. The live widget is TUI-only; JSON, print, and RPC sessions can still record history without starting a UI timer. Live execution state does not survive a process restart.
+
+Existing sessions containing the older start/finish entries remain readable. They are not rewritten or automatically merged.
+
+Pi supplies `@earendil-works/pi-coding-agent` and `@earendil-works/pi-tui` at runtime. Their peer ranges follow Pi's package convention; the minimum supported host version is 0.99.1.
+
+## Development
+
+```bash
+npm install --ignore-scripts
+npm run check
+npm test
+```
+
+Tests cover nested/concurrent execution, immediate live starts, ticking without tool updates, completion removal, narrow widths, branch cleanup, aborts, retries, clock adjustments, and legacy rendering.
 
 ## License
 
