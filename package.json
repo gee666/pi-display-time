@@ -26,7 +26,10 @@
   },
   "scripts": {
     "pretest": "npm install --save-dev --ignore-scripts @earendil-works/pi-coding-agent@latest @earendil-works/pi-tui@latest && npm run check",
-    "test": "node --experimental-strip-types --test tests/*.test.ts",
+    "test": "npm run test:unit && npm run test:integration",
+    "test:unit": "node --experimental-strip-types --test tests/timing.test.ts",
+    "test:integration": "node --experimental-strip-types --test tests/*.integration.test.ts",
+    "test:evergreen": "npm test && npm run test:e2e",
     "check": "tsc --noEmit",
     "test:e2e": "node --test tests/*.e2e.mjs"
   },

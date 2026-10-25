@@ -31,18 +31,14 @@ export default function observe(pi: ExtensionAPI) {
       pi.appendEntry("probe-compaction-cut", {});
     },
   });
-  let blockSettlement = false;
-  pi.on("before_agent_start", event => {
-    if (event.messageType === "user" && event.prompt.includes("PROBE_ABORT_AT_SETTLEMENT")) blockSettlement = true;
+  pi.registerCommand("probe-compact", {
+    description: "Compact through Pi's public extension context.",
+    handler: async (_args, ctx) => {
+      await new Promise<void>((resolve, reject) => ctx.compact({ onComplete: () => resolve(), onError: reject }));
+    },
   });
   let continued = false;
-  pi.on("agent_before_settle", async (_event, ctx) => {
-    if (blockSettlement) {
-      blockSettlement = false;
-      ctx.ui.notify("PROBE_ABORT_READY", "info");
-      await new Promise(resolve => setTimeout(resolve, 1500));
-      return;
-    }
+  pi.on("agent_before_settle", () => {
     if (continued) return;
     continued = true;
     return { continue: true, entries: [{ type: "custom_message", customType: "probe-continuation", content: "Reply OK without tools.", display: false }] };

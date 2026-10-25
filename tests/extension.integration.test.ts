@@ -36,6 +36,34 @@ function harness(mode = "tui") {
   };
 }
 
+test("concurrent nested work stays live until completion and produces one interrupted batch at settlement", () => {
+  const h = harness();
+  try {
+    h.emit("message_start", { message: { role: "user" } });
+    h.emit("tool_execution_start", { toolCallId: "root", toolName: "codemode" });
+    h.emit("tool_execution_start", { toolCallId: "child", parentToolCallId: "root", toolName: "read" });
+    h.emit("tool_execution_start", { toolCallId: "sibling", toolName: "bash" });
+    h.emit("tool_execution_end", { toolCallId: "child", parentToolCallId: "root", toolName: "read", isError: true });
+    assert.equal(h.lines().length, 2, "completion removes only its own running line");
+    assert.equal(h.entries.length, 0, "live updates never flood the transcript");
+    h.emit("agent_before_settle", { outcome: "completed" });
+    h.emit("agent_settled", { aborted: true });
+    assert.deepEqual(h.lines(), []);
+    assert.equal(h.entries.length, 2, "settlement flushes one batch and one run, not per-call rows");
+    const batch = h.entries[0].data;
+    const run = h.entries[1].data;
+    assert.equal(batch.totalCalls, 3);
+    assert.equal(batch.failedCalls, 1);
+    assert.equal(batch.interruptedCalls, 2);
+    assert.equal(run.totalCalls, 3);
+    assert.equal(run.outcome, "aborted");
+    assert.match(h.render(batch), /2 tools.*codemode, bash.*1 nested: read.*1 failed, 2 interrupted/);
+    assert.match(h.render(run), /Run aborted.*3 tool calls/);
+    h.emit("agent_settled", { aborted: true });
+    assert.equal(h.entries.length, 2, "repeated settlement does not duplicate history");
+  } finally { h.emit("session_shutdown"); }
+});
+
 test("live widget shows starts immediately, fits narrow terminals, and removes completed calls", () => {
   const h = harness();
   try {
