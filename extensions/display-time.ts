@@ -205,12 +205,14 @@ export default function displayTime(pi: ExtensionAPI) {
       : event.message.stopReason === "error" ? "error" : "completed";
   });
   pi.on("agent_before_settle", event => { outcome = event.outcome; });
-  pi.on("agent_settled", () => {
+  pi.on("agent_settled", event => {
     // Only final settlement ends the timer, not an intermediate agent_end that
     // may be followed by retries, compaction, or another extension's continuation.
     const pending = tracker.flush();
     if (pending) pi.appendEntry(ENTRY_TYPE, pending);
-    const data = tracker.finish(outcome);
+    // An abort during another extension's settlement work can follow the last
+    // completed assistant/turn boundary. The final event is authoritative.
+    const data = tracker.finish(event.aborted ? "aborted" : outcome);
     if (data) pi.appendEntry(ENTRY_TYPE, data);
     outcome = "completed";
     stopLive();

@@ -1,6 +1,6 @@
 {
   "name": "pi-display-time",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Live start times for running and nested tools, with a compact persistent timing timeline.",
   "type": "module",
   "keywords": [
@@ -27,7 +27,8 @@
   "scripts": {
     "pretest": "npm install --save-dev --ignore-scripts @earendil-works/pi-coding-agent@latest @earendil-works/pi-tui@latest && npm run check",
     "test": "node --experimental-strip-types --test tests/*.test.ts",
-    "check": "tsc --noEmit"
+    "check": "tsc --noEmit",
+    "test:e2e": "node --test tests/*.e2e.mjs"
   },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": ">=1.4.0",

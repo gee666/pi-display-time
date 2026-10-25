@@ -101,11 +101,16 @@ Pi supplies `@earendil-works/pi-coding-agent` and `@earendil-works/pi-tui` at ru
 ```bash
 npm install --ignore-scripts
 npm test
+PI_EVERGREEN_PI_BIN=/absolute/path/to/pi npm run test:e2e
 ```
 
 `npm test` first installs both Pi packages at npm `latest` as direct development dependencies with `--save-dev --ignore-scripts`, then runs `npm run check` for strict typechecking before the tests. A failed refresh or typecheck stops the run. Commit the resulting manifest and lockfile changes. No separate linter is configured.
 
-Tests cover nested/concurrent execution, immediate live starts, ticking without tool updates, completion removal, narrow widths, branch cleanup, aborts, retries, clock adjustments, and legacy rendering. Integration tests use a mocked Pi host and the installed Pi TUI utilities. They do not launch an interactive Pi session.
+Unit tests cover nested/concurrent execution, immediate live starts, ticking without tool updates, completion removal, narrow/wide text, branch settings and cleanup, aborts, retries, clock adjustments, and legacy rendering. Host-level tests use a mocked Pi host and the installed Pi TUI utilities.
+
+`npm run test:e2e` requires `PI_EVERGREEN_PI_BIN` pointing to the installed global Pi CLI; it never installs a runtime or silently skips coverage. It explicitly loads this extension in real RPC sessions and checks nested successful/failed tools, persisted result ordering and JSONL round-trips, continuations, off-mode recording, compaction (with a deterministic custom summarizer), session replacement/resume, and an abort during settlement. A supported provider hook inspects actual outbound payloads to verify display-only entries never reach the model, with a sentinel negative control. This test reproduced and guards against a completed outcome incorrectly surviving an abort after the last assistant boundary.
+
+Live requests default to `openai`, `gpt-6-luna`, reasoning `medium`; override with `PI_EVERGREEN_E2E_PROVIDER`, `PI_EVERGREEN_E2E_MODEL`, and `PI_EVERGREEN_E2E_REASONING`. Requests are brief and standard provider output limits are capped at 2048 tokens. Tests do not inspect credentials or log headers. Interactive terminal repainting and actual transport retry/overflow recovery are not exercised by the RPC test; their tracker behavior is covered at host level.
 
 Before each release, rerun `npm test` against npm latest and update the `Tested against Pi` line to the actual installed version after checks pass. Inspect `npm pack --dry-run --ignore-scripts` and run `git diff --check`. Keep the repository's root `AGENTS.md` maintenance rules current.
 

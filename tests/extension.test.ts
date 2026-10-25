@@ -13,7 +13,7 @@ function harness(mode = "tui") {
   const theme = { fg: (_color: string, text: string) => text };
   let widget: any;
   const ctx = {
-    mode, hasUI: mode === "tui", sessionManager: { getBranch: () => entries },
+    mode, hasUI: mode === "tui" || mode === "rpc", sessionManager: { getBranch: () => entries },
     ui: { theme, setWidget: (_key: string, value: any) => { widget = value; }, setStatus() {}, notify() {} },
   };
   const api = {
@@ -135,6 +135,133 @@ test("explicit abort is retained when Pi skips agent_before_settle", () => {
     assert.equal(h.entries[0].data.outcome, "aborted");
     assert.match(h.render(h.entries[0].data), /Run aborted/);
   } finally { h.emit("session_shutdown"); }
+});
+
+test("settlement abort flag overrides a completed assistant and settlement boundary", () => {
+  const h = harness("rpc");
+  h.emit("agent_start");
+  h.emit("message_end", { message: { role: "assistant", stopReason: "stop" } });
+  h.emit("turn_end", { entries: [], outcome: "completed" });
+  h.emit("agent_before_settle", { outcome: "completed" });
+  h.emit("agent_settled", { aborted: true });
+  assert.equal(h.entries.length, 1);
+  assert.equal(h.entries[0].data.outcome, "aborted");
+});
+
+test("continuations, retries and compaction do not finalize or reset a running total", () => {
+  const h = harness("json");
+  h.emit("message_start", { message: { role: "user" } });
+  h.emit("agent_start");
+  h.emit("tool_execution_start", { toolCallId: "one", toolName: "bash" });
+  h.emit("tool_execution_end", { toolCallId: "one", toolName: "bash", isError: true });
+  const first = h.emit("turn_end", { entries: [], outcome: "error" });
+  assert.equal(first.entries[0].data.failedCalls, 1);
+  h.emit("agent_end");
+  h.emit("compaction_start", { reason: "overflow" });
+  h.emit("compaction_end", { reason: "overflow", aborted: false, willRetry: true });
+  h.emit("agent_before_settle", { outcome: "error" });
+  h.emit("agent_start");
+  h.emit("message_start", { message: { role: "user" } }); // queued input in the same unsettled run
+  h.emit("tool_execution_start", { toolCallId: "two", toolName: "read" });
+  h.emit("tool_execution_end", { toolCallId: "two", toolName: "read", isError: false });
+  const second = h.emit("turn_end", { entries: [], outcome: "completed" });
+  assert.equal(second.entries[0].data.totalCalls, 1);
+  assert.equal(h.entries.length, 0, "Only final settlement writes a run summary");
+  h.emit("agent_settled");
+  assert.equal(h.entries.length, 1);
+  assert.equal(h.entries[0].data.totalCalls, 2);
+  assert.equal(h.entries[0].data.failedCalls, 1);
+  assert.equal(h.entries[0].data.outcome, "completed");
+  h.emit("agent_settled");
+  assert.equal(h.entries.length, 1, "settlement is idempotent");
+  h.emit("agent_start");
+  h.emit("agent_settled");
+  assert.equal(h.entries[1].data.totalCalls, 0);
+});
+
+test("branch settings use the last valid active-branch value, not abandoned settings", async () => {
+  const h = harness();
+  await h.command("off");
+  h.entries.splice(0); // navigate to a branch before the off setting
+  h.emit("session_tree");
+  h.emit("tool_execution_start", { toolCallId: "visible", toolName: "read" });
+  assert.equal(h.lines().length, 1, "default compact is restored on branches without settings");
+  h.entries.push({ type: "custom", customType: "display-time-settings", data: { mode: "summary" } });
+  h.entries.push({ type: "custom", customType: "display-time-settings", data: { mode: "invalid" } });
+  h.emit("session_tree");
+  h.emit("agent_start");
+  h.emit("agent_settled");
+  assert.match(h.render(h.entries.at(-1).data), /Run finished/);
+  const length = h.entries.length;
+  await h.command("invalid");
+  assert.equal(h.entries.length, length);
+  h.emit("session_shutdown");
+  h.emit("session_shutdown");
+  assert.deepEqual(h.lines(), []);
+});
+
+test("no-live and all non-TUI modes suppress widgets without suppressing history", () => {
+  for (const mode of ["tui", "rpc", "json", "print"]) {
+    const h = harness(mode);
+    h.flags.set("display-time-no-live", true);
+    h.emit("agent_start");
+    h.emit("tool_execution_start", { toolCallId: "a", toolName: "read" });
+    assert.deepEqual(h.lines(), []);
+    h.emit("agent_settled");
+    assert.equal(h.entries.length, 2);
+    assert.equal(h.entries[0].data.interruptedCalls, 1);
+    assert.equal(h.entries[1].data.totalCalls, 1);
+    h.emit("session_shutdown");
+  }
+});
+
+test("default live settings never create terminal widgets in RPC, JSON or print mode", () => {
+  for (const mode of ["rpc", "json", "print"]) {
+    const h = harness(mode);
+    assert.equal(h.flags.get("display-time-no-live"), false);
+    h.emit("agent_start");
+    h.emit("tool_execution_start", { toolCallId: "a", toolName: "read" });
+    assert.deepEqual(h.lines(), [], `${mode} must not receive a terminal component even with live display enabled`);
+    h.emit("tool_execution_end", { toolCallId: "a", toolName: "read", isError: false });
+    const boundary = h.emit("turn_end", { entries: [], outcome: "completed" });
+    assert.equal(boundary.entries[0].data.totalCalls, 1);
+    h.emit("agent_settled", { aborted: false });
+    assert.equal(h.entries[0].data.totalCalls, 1);
+    h.emit("session_shutdown");
+  }
+});
+
+test("live calls crossing local midnight gain a start date", t => {
+  let now = Date.UTC(2000, 0, 1, 23, 59, 59);
+  t.mock.method(Date, "now", () => now);
+  const h = harness();
+  h.flags.set("display-time-zone", "UTC");
+  h.flags.set("display-time-locale", "en-US");
+  h.emit("session_start");
+  try {
+    h.emit("tool_execution_start", { toolCallId: "midnight", toolName: "read" });
+    assert.doesNotMatch(h.lines()[0], /Jan 1, 2000/);
+    now += 2000;
+    assert.match(h.lines()[0], /Jan 1, 2000.*23:59:59/);
+  } finally { h.emit("session_shutdown"); }
+});
+
+test("clock flags, wide text and expansion limits preserve display intent", () => {
+  const h = harness();
+  h.flags.set("display-time-zone", "UTC");
+  h.flags.set("display-time-locale", "en-US");
+  h.flags.set("display-time-12h", true);
+  h.emit("session_start");
+  const call = { id: "a", name: "工具😀", startedAt: Date.UTC(2000, 0, 1, 13), finishedAt: Date.UTC(2000, 0, 1, 14), elapsedMs: 3, status: "completed" };
+  const data = { version: 2, kind: "tools", startedAt: call.startedAt, finishedAt: call.finishedAt, elapsedMs: 3, calls: Array.from({ length: 42 }, (_, i) => ({ ...call, id: String(i) })), totalCalls: 42, failedCalls: 0, interruptedCalls: 0 };
+  const expanded = h.render(data, true);
+  assert.match(expanded, /02:00:00 PM/);
+  assert.match(expanded, /Jan 1, 2000/);
+  assert.match(expanded, /2 more calls/);
+  assert.equal((expanded.match(/01:00:00 PM/g) ?? []).length, 40);
+  h.emit("tool_execution_start", { toolCallId: "wide", toolName: "工具😀" });
+  for (const width of [1, 2, 5, 20]) for (const line of h.lines(width)) assert.ok(visibleWidth(line) <= width);
+  h.emit("session_shutdown");
 });
 
 test("successful retry replaces an earlier error outcome", () => {
