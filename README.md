@@ -2,7 +2,9 @@
 
 Live start times for running tools, plus a compact, persistent timing history for [Pi](https://github.com/earendil-works/pi).
 
-Requires Pi 0.99.1 or newer and Node.js 22.19 or newer. Uses only public APIs. Never replaces tools or their renderers.
+Requires Pi 1.4.0 or newer and Node.js 22.19 or newer. Uses only public APIs. Never replaces tools or their renderers.
+
+Tested against Pi 1.4.0
 
 ## While tools run
 
@@ -92,17 +94,20 @@ Elapsed durations use a monotonic clock, so system clock adjustments do not dist
 
 Existing sessions containing the older start/finish entries remain readable. They are not rewritten or automatically merged.
 
-Pi supplies `@earendil-works/pi-coding-agent` and `@earendil-works/pi-tui` at runtime. Their peer ranges follow Pi's package convention; the minimum supported host version is 0.99.1.
+Pi supplies `@earendil-works/pi-coding-agent` and `@earendil-works/pi-tui` at runtime. Both peer ranges start at 1.4.0, the tested baseline. Only the current npm latest release is tested; older releases are not part of a compatibility matrix.
 
 ## Development
 
 ```bash
 npm install --ignore-scripts
-npm run check
 npm test
 ```
 
-Tests cover nested/concurrent execution, immediate live starts, ticking without tool updates, completion removal, narrow widths, branch cleanup, aborts, retries, clock adjustments, and legacy rendering.
+`npm test` first installs both Pi packages at npm `latest` as direct development dependencies with `--save-dev --ignore-scripts`, then runs `npm run check` for strict typechecking before the tests. A failed refresh or typecheck stops the run. Commit the resulting manifest and lockfile changes. No separate linter is configured.
+
+Tests cover nested/concurrent execution, immediate live starts, ticking without tool updates, completion removal, narrow widths, branch cleanup, aborts, retries, clock adjustments, and legacy rendering. Integration tests use a mocked Pi host and the installed Pi TUI utilities. They do not launch an interactive Pi session.
+
+Before each release, rerun `npm test` against npm latest and update the `Tested against Pi` line to the actual installed version after checks pass. Inspect `npm pack --dry-run --ignore-scripts` and run `git diff --check`. Keep the repository's root `AGENTS.md` maintenance rules current.
 
 ## License
 

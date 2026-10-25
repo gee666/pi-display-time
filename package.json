@@ -25,14 +25,17 @@
     ]
   },
   "scripts": {
+    "pretest": "npm install --save-dev --ignore-scripts @earendil-works/pi-coding-agent@latest @earendil-works/pi-tui@latest && npm run check",
     "test": "node --experimental-strip-types --test tests/*.test.ts",
     "check": "tsc --noEmit"
   },
   "peerDependencies": {
-    "@earendil-works/pi-coding-agent": "*",
-    "@earendil-works/pi-tui": "*"
+    "@earendil-works/pi-coding-agent": ">=1.4.0",
+    "@earendil-works/pi-tui": ">=1.4.0"
   },
   "devDependencies": {
+    "@earendil-works/pi-coding-agent": "^1.4.0",
+    "@earendil-works/pi-tui": "^1.4.0",
     "@types/node": "^24.0.0",
     "typescript": "^5.9.3"
   },
