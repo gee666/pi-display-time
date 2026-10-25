@@ -2,6 +2,11 @@
 
 Keep this root `AGENTS.md` tracked and current. Update it whenever the stack, commands, boundaries, test policy, or release process changes. Treat it as a maintenance requirement, not a one-time checklist.
 
+## Repository synchronization
+
+- Before starting any work, pull the latest changes from `origin` with `git pull --ff-only`. Preserve local edits; stop and resolve safely if the pull is blocked.
+- After each completed, validated piece of work, commit your changes and push to `origin` immediately. Work happens on multiple machines; do not leave finished work unsynchronized.
+
 ## Stack and boundaries
 
 This is an ESM TypeScript Pi extension. Keep timing calculations in `extensions/timing.ts`, Pi lifecycle and UI integration in `extensions/display-time.ts`, and regression tests in `tests/`. Use public Pi APIs; never replace tools or their renderers.
