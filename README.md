@@ -4,7 +4,7 @@ Live start times for running tools, plus a compact, persistent timing history fo
 
 Requires Pi 1.4.0 or newer and Node.js 22.19 or newer. Uses only public APIs. Never replaces tools or their renderers.
 
-Tested against Pi 1.4.0
+Tested against Pi 1.5.0
 
 ## While tools run
 
